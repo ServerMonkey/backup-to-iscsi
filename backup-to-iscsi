@@ -1,0 +1,130 @@
+#!/bin/sh
+#info: Backup a folder to iSCSI target
+
+# global variables
+APP_BIN=$(basename "$0")
+
+# help
+if [ -z "$1" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "Backup a folder to iSCSI target."
+    echo "With auto login, mount and unmount"
+    echo ""
+    echo "Usage:"
+    echo "  $APP_BIN <IQN> <PATH_SRC> <PATH_DES> -d"
+    echo "Add '-d' to the end to make a dryrun."
+    exit 0
+fi
+
+# check input
+if [ -z "$2" ]; then
+    echo "You need to specify the source path"
+    exit 0
+fi
+if [ -z "$3" ]; then
+    echo "You need to specify the destiantion path"
+    exit 0
+fi
+
+### FUNCTIONS ###
+
+info() {
+    echo "$1"
+    logger -t "$APP_BIN" "$1"
+}
+
+error() {
+    echo "ERROR: $1" >&2
+    logger -t "$APP_BIN" "ERROR: $1"
+    exit 1
+}
+
+warn() {
+    echo "WARNING: $1" >&2
+    logger -t "$APP_BIN" "WARNING: $1"
+}
+
+unmount_des() {
+    umount "$PATH_DES" || warn "Failed to unmount $PATH_DES"
+    wait
+}
+
+### MAIN ###
+
+# variables
+IQN=$1
+PATH_SRC=$2
+PATH_DES=$3
+DRYRUN=$4
+
+# check input IQN
+case "$IQN" in
+iqn.*)
+    : # valid IQN
+    ;;
+*)
+    error "Invalid IQN, must start with: iqn.*"
+    ;;
+esac
+
+# check input SRC
+if [ ! -d "$PATH_SRC" ]; then
+    error "PATH_SRC Must be a valid source folder path"
+fi
+
+# check requirements
+if [ -z "$(command -v iscsiadm)" ]; then
+    error "iscsiadm is not installed"
+fi
+
+# try to login no matter what state
+iscsiadm -m node --login >/dev/null 2>&1
+
+# find if destination iSCSI sessions exists
+DST_ONLINE=$(iscsiadm -m session -o show | grep "$IQN")
+# if there is not iscsiadm session
+if [ "$DST_ONLINE" = "" ]; then
+    # try to login again
+    ISCSI_LOGIN=$(iscsiadm -m node --login 2>&1)
+    ISCSI_LOGIN_PARSED=$(
+        echo "$ISCSI_LOGIN" | sed -e '/already pres/d' -e '/not log into/d'
+    )
+    # verify that iscsiadm login works as expected
+    if ! [ "$ISCSI_LOGIN_PARSED" = "" ]; then
+        error "'iscsiadm -m node --login' failed with: $ISCSI_LOGIN_PARSED"
+    fi
+fi
+
+# find if destination mount exists
+DES_IS_MOUNTED=$(mountpoint "$PATH_DES")
+if echo "$DES_IS_MOUNTED" | grep -q "is not"; then
+    mount "$PATH_DES" || error "Failed to mount $PATH_DES"
+    wait
+elif echo "$DES_IS_MOUNTED" | grep -q "is a"; then
+    warn "Path $PATH_DES is already mounted"
+else
+    error "mountpoint: $DES_IS_MOUNTED"
+fi
+
+# check DES path
+if [ ! -d "$PATH_DES" ]; then
+    unmount_des
+    error "PATH_DES must be a valid target folder path"
+fi
+
+# start backup, don't compress, we expect already arcived files
+if [ "$DRYRUN" = "-d" ]; then
+    info "DRYRUN: rsync --dry-run -a $PATH_SRC $PATH_DES"
+    rsync --dry-run -a "$PATH_SRC" "$PATH_DES"
+else
+    rsync -aq "$PATH_SRC" "$PATH_DES" || (
+        unmount_des
+        error "Failed rsync -aq $PATH_SRC $PATH_DES"
+    )
+fi
+
+# unmount
+unmount_des
+
+MSG_DONE="DONE: $IQN $PATH_SRC --> $PATH_DES"
+echo "$APP_BIN $MSG_DONE"
+logger -t "$APP_BIN" "$MSG_DONE"
