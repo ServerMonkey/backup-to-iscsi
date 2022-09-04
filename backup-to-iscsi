@@ -111,7 +111,7 @@ if [ ! -d "$PATH_DES" ]; then
     error "PATH_DES must be a valid target folder path"
 fi
 
-# start backup, don't compress, we expect already arcived files
+# start backup, don't compress, we expect already archived files
 if [ "$DRYRUN" = "-d" ]; then
     info "DRYRUN: rsync --dry-run -a $PATH_SRC $PATH_DES"
     rsync --dry-run -a "$PATH_SRC" "$PATH_DES"
@@ -126,5 +126,7 @@ fi
 unmount_des
 
 MSG_DONE="DONE: $IQN $PATH_SRC --> $PATH_DES"
-echo "$APP_BIN $MSG_DONE"
 logger -t "$APP_BIN" "$MSG_DONE"
+if [ "$DRYRUN" = "-d" ]; then
+    echo "$APP_BIN $MSG_DONE"
+fi
